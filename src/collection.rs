@@ -176,29 +176,58 @@ impl<K: Key, V> Arena<K, V> {
 		K::new(self.next, version)
 	}
 
-	/// Attempts to insert a value into the [`Arena`], returning the key if successful.
 	#[inline]
-	#[must_use]
-	pub fn try_insert(&mut self, value: V) -> Option<K> {
-		let key = self.key_at_next()?;
+	fn do_insert<T, F: FnOnce(K, T) -> V>(&mut self, x: T, f: F) -> Result<K, T> {
+		let Some(key) = self.key_at_next() else {
+			return Err(x);
+		};
 
 		if self.next == self.buf.len() {
-			let next = self.next.checked_add(1)?;
+			let Some(next) = self.next.checked_add(1) else {
+				return Err(x);
+			};
 
 			self.buf.push(Entry::vacant(next));
 		}
 
+		self.next = self.buf[self.next].set(f(key, x));
 		self.len += 1;
-		self.next = self.buf[self.next].set(value);
 
-		Some(key)
+		Ok(key)
+	}
+
+	/// Calls `f` with the key and attempts to insert the produced value into the [`Arena`], returning the key if successful.
+	/// If not, ownership of `f` is passed back to the caller.
+	#[inline]
+	pub fn try_insert_with<F: FnOnce(K) -> V>(&mut self, f: F) -> Result<K, F> {
+		self.do_insert(f, |key, f| f(key))
+	}
+
+	/// Attempts to insert a value into the [`Arena`], returning the key if successful.
+	/// If not, ownership of the value is passed back to the caller.
+	#[inline]
+	pub fn try_insert(&mut self, value: V) -> Result<K, V> {
+		self.do_insert(value, |_key, value| value)
+	}
+
+	/// Calls `f` with the key and inserts the produced value into the [`Arena`], returning the key.
+	///
+	/// # Panics
+	///
+	/// Panics if insertion fails.
+	#[inline]
+	pub fn insert_with<F: FnOnce(K) -> V>(&mut self, f: F) -> K {
+		self.try_insert_with(f).ok().expect("arena is full")
 	}
 
 	/// Inserts a value into the [`Arena`], returning the key.
+	///
+	/// # Panics
+	///
+	/// Panics if insertion fails.
 	#[inline]
-	#[must_use]
 	pub fn insert(&mut self, value: V) -> K {
-		self.try_insert(value).expect("arena is full")
+		self.try_insert(value).ok().expect("arena is full")
 	}
 
 	/// Attempts to remove a value from the [`Arena`], returning the value if successful.
@@ -217,6 +246,10 @@ impl<K: Key, V> Arena<K, V> {
 	}
 
 	/// Removes a value from the [`Arena`], returning the value.
+	///
+	/// # Panics
+	///
+	/// Panics if removal fails.
 	#[inline]
 	pub fn remove(&mut self, key: K) -> V {
 		self.try_remove(key).expect("invalid key")
@@ -321,6 +354,15 @@ mod test {
 		arena.remove(c);
 
 		assert_eq!(arena.len(), 0);
+	}
+
+	#[test]
+	fn add_with_key() {
+		let mut arena = Arena::<Id, Id>::new();
+
+		let a = arena.insert_with(|a| a);
+
+		assert_eq!(arena[a], a);
 	}
 
 	#[test]
