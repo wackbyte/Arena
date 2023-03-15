@@ -11,3 +11,20 @@ repository = "https://github.com/Rerumu/Arena"
 
 keywords = ["arena", "allocator"]
 categories = ["caching", "data-structures", "memory-management"]
+
+[dev-dependencies]
+criterion = "0.4.0"
+generational-arena = "0.2.8"
+iai = "0.1.1"
+id-arena = "2.2.1"
+slab = "0.4.8"
+slotmap = "1.0.6"
+thunderdome = "0.6.0"
+
+[[bench]]
+name = "compare"
+harness = false
+
+[[bench]]
+name = "iawesome"
+harness = false

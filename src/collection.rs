@@ -169,6 +169,12 @@ impl<K: Key, V> Arena<K, V> {
 	}
 
 	#[inline]
+	#[must_use]
+	pub fn contains_key(&self, key: K) -> bool {
+		self.get(key).is_some()
+	}
+
+	#[inline]
 	fn key_at_next(&self) -> Option<K> {
 		let entry = self.buf.get(self.next);
 		let version = entry.map_or_else(K::Version::new, |entry| entry.version);
@@ -179,7 +185,7 @@ impl<K: Key, V> Arena<K, V> {
 	/// Attempts to insert a value into the [`Arena`], returning the key if successful.
 	#[inline]
 	#[must_use]
-	pub fn try_insert(&mut self, value: V) -> Option<K> {
+	pub fn try_insert_orig(&mut self, value: V) -> Option<K> {
 		let key = self.key_at_next()?;
 
 		if self.next == self.buf.len() {
@@ -197,21 +203,152 @@ impl<K: Key, V> Arena<K, V> {
 	/// Inserts a value into the [`Arena`], returning the key.
 	#[inline]
 	#[must_use]
+	pub fn insert_orig(&mut self, value: V) -> K {
+		self.try_insert_orig(value).expect("arena is full")
+	}
+
+	#[inline(always)]
+	fn do_insert<T, F: FnOnce(K, T) -> V>(&mut self, x: T, f: F) -> Result<K, T> {
+		let Some(key) = self.key_at_next() else {
+			return Err(x);
+		};
+
+		if self.next == self.buf.len() {
+			let Some(next) = self.next.checked_add(1) else {
+				return Err(x);
+			};
+
+			self.buf.push(Entry::vacant(next));
+		}
+
+		self.next = self.buf[self.next].set(f(key, x));
+		self.len += 1;
+
+		Ok(key)
+	}
+
+	/// Calls `f` with the key and attempts to insert the produced value into the [`Arena`], returning the key if successful.
+	/// If not, ownership of `f` is passed back to the caller.
+	#[inline]
+	pub fn try_insert_with<F: FnOnce(K) -> V>(&mut self, f: F) -> Result<K, F> {
+		#[inline(always)]
+		fn apply<K, V, F: FnOnce(K) -> V>(key: K, f: F) -> V {
+			f(key)
+		}
+
+		self.do_insert(f, apply)
+	}
+
+	/// Attempts to insert a value into the [`Arena`], returning the key if successful.
+	/// If not, ownership of the value is passed back to the caller.
+	#[inline]
+	pub fn try_insert(&mut self, value: V) -> Result<K, V> {
+		#[inline(always)]
+		fn apply<K, V>(_key: K, value: V) -> V {
+			value
+		}
+
+		self.do_insert(value, apply)
+	}
+
+	/// Calls `f` with the key and inserts the produced value into the [`Arena`], returning the key.
+	///
+	/// # Panics
+	///
+	/// Panics if insertion fails.
+	#[inline]
+	pub fn insert_with<F: FnOnce(K) -> V>(&mut self, f: F) -> K {
+		self.try_insert_with(f).ok().expect("arena is full")
+	}
+
+	/// Inserts a value into the [`Arena`], returning the key.
+	///
+	/// # Panics
+	///
+	/// Panics if insertion fails.
+	#[inline]
 	pub fn insert(&mut self, value: V) -> K {
-		self.try_insert(value).expect("arena is full")
+		self.try_insert(value).ok().expect("arena is full")
+	}
+
+	/// Calls `f` with the key and attempts to insert the produced value into the [`Arena`], returning the key if successful.
+	/// If not, ownership of `f` is passed back to the caller.
+	#[inline]
+	pub fn try_insert_with_alt<F: FnOnce(K) -> V>(&mut self, f: F) -> Result<K, F> {
+		let Some(key) = self.key_at_next() else {
+			return Err(f);
+		};
+
+		if self.next == self.buf.len() {
+			let Some(next) = self.next.checked_add(1) else {
+				return Err(f);
+			};
+
+			self.buf.push(Entry::vacant(next));
+		}
+
+		let value = f(key);
+		self.next = self.buf[self.next].set(value);
+		self.len += 1;
+
+		Ok(key)
+	}
+
+	/// Attempts to insert a value into the [`Arena`], returning the key if successful.
+	/// If not, ownership of the value is passed back to the caller.
+	#[inline]
+	pub fn try_insert_alt(&mut self, value: V) -> Result<K, V> {
+		let Some(key) = self.key_at_next() else {
+			return Err(value)
+		};
+
+		if self.next == self.buf.len() {
+			let Some(next) = self.next.checked_add(1) else {
+				return Err(value);
+			};
+
+			self.buf.push(Entry::vacant(next));
+		}
+
+		self.next = self.buf[self.next].set(value);
+		self.len += 1;
+
+		Ok(key)
+	}
+
+	/// Calls `f` with the key and inserts the produced value into the [`Arena`], returning the key.
+	///
+	/// # Panics
+	///
+	/// Panics if insertion fails.
+	#[inline]
+	pub fn insert_with_alt<F: FnOnce(K) -> V>(&mut self, f: F) -> K {
+		self.try_insert_with_alt(f).ok().expect("arena is full")
+	}
+
+	/// Inserts a value into the [`Arena`], returning the key.
+	///
+	/// # Panics
+	///
+	/// Panics if insertion fails.
+	#[inline]
+	pub fn insert_alt(&mut self, value: V) -> K {
+		self.try_insert_alt(value).ok().expect("arena is full")
 	}
 
 	/// Attempts to remove a value from the [`Arena`], returning the value if successful.
 	#[inline]
 	pub fn try_remove(&mut self, key: K) -> Option<V> {
+		let index = key.index();
+
 		let old = self
 			.buf
-			.get_mut(key.index())
+			.get_mut(index)
 			.filter(|entry| has_version(key, entry))
 			.and_then(|entry| entry.unset(self.next))?;
 
 		self.len -= 1;
-		self.next = key.index();
+		self.next = index;
 
 		Some(old)
 	}
